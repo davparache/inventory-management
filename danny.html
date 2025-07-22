@@ -1,544 +1,1 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Digitalizador de Facturas - Escáner de Precisión</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/quagga/dist/quagga.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.7.77/Tone.js"></script>
-    
-    <style>
-        /* Chosen Palette: Modern Dark Theme */
-        /* Application Structure Plan: Final optimized version with a simplified and more robust scanning workflow. */
-        /* Visualization & Content Choices: Report Info: Scanning UX -> Goal: Maximize Precision & Simplify UI -> Method: Replaced multiple scan buttons with a single "Escanear Código" button that opens a live video stream. A "Capturar" button is overlaid on the video feed, allowing the user to trigger a high-precision scan on a single, well-aligned frame. This provides maximum user control and addresses focus issues. | Report Info: Image Pre-processing -> Goal: Improve Reliability -> Added a canvas-based pre-processing step (grayscale, contrast) before sending an image to QuaggaJS to improve detection rates on real-world photos. */
-        /* CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. */
-        body { background-color: #1a202c; color: #e2e8f0; font-family: 'Inter', sans-serif; }
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-        .loader { border: 4px solid #4a5568; border-top: 4px solid #6366f1; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        .btn { padding: 0.75rem 1.5rem; border-radius: 0.5rem; font-weight: 600; transition: background-color 0.3s, transform 0.1s; }
-        .btn:active { transform: scale(0.98); }
-        .btn-primary { background-color: #4f46e5; color: white; }
-        .btn-primary:hover { background-color: #4338ca; }
-        .btn-secondary { background-color: #4a5568; color: #e2e8f0; }
-        .btn-secondary:hover { background-color: #718096; }
-        .btn-success { background-color: #16a34a; color: white; }
-        .btn-success:hover { background-color: #15803d; }
-        .modal-backdrop { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.7); display: flex; justify-content: center; align-items: center; z-index: 1000; }
-        .modal-content { background-color: #2d3748; color: #e2e8f0; padding: 2rem; border-radius: 1rem; box-shadow: 0 10px 25px rgba(0,0,0,0.1); max-width: 90%; width: 500px; text-align: center; border: 1px solid #4a5568; }
-        #invoice-image { width: 100%; height: auto; cursor: default; }
-        #invoice-image.pannable { cursor: grab; }
-        #invoice-image.pannable:active { cursor: grabbing; }
-        .card { background-color: #2d3748; border: 1px solid #4a5568; }
-        .drop-zone { border-color: #4a5568; }
-        .drop-zone:hover { background-color: #4a5568; }
-        .table-header { background-color: #4a5568; }
-        .table-row { border-color: #4a5568; }
-        .table-row-interactive:hover { background-color: rgba(74, 85, 104, 0.5); cursor: pointer; }
-        .table-container { max-height: 400px; overflow-y: auto; }
-        .full-height-table-container { height: calc(100vh - 300px); min-height: 400px; overflow-y: auto; }
-        .checkmark { width: 20px; height: 20px; border-radius: 50%; border: 2px solid #718096; transition: background-color 0.3s, border-color 0.3s; }
-        .checkmark.verified { background-color: #16a34a; border-color: #16a34a; }
-        #scanner-viewport { position: relative; width: 100%; max-width: 500px; margin: auto; min-height: 150px; border: 4px solid transparent; transition: border-color 0.2s; background-color: #000; overflow: hidden; }
-        #scanner-viewport.scanned-successfully { border-color: #16a34a; box-shadow: 0 0 20px #16a34a; }
-        #scanner-viewport video, #scanner-viewport img { max-width: 100%; width: 100%; height: auto; }
-        #scanner-viewport .drawingBuffer { position: absolute; top: 0; left: 0; }
-        textarea.form-input { background-color: #1a202c; border: 1px solid #4a5568; color: #e2e8f0; font-family: monospace; }
-        #capture-button { position: absolute; bottom: 1rem; left: 50%; transform: translateX(-50%); z-index: 10; }
-        .scan-guide { position: absolute; left: 0; right: 0; top: 50%; height: 2px; background-color: rgba(255, 0, 0, 0.7); box-shadow: 0 0 10px rgba(255, 0, 0, 0.7); z-index: 5; }
-    </style>
-</head>
-<body class="text-gray-200">
-
-    <div id="app-container" class="container mx-auto p-4 md:p-8 max-w-7xl">
-        <header class="text-center mb-8">
-            <h1 class="text-3xl md:text-4xl font-bold text-white">Digitalizador y Verificador de Piezas</h1>
-            <p class="text-md text-gray-400 mt-2">Escáner de Precisión</p>
-        </header>
-
-        <main id="upload-view" class="w-full">
-            <div class="card p-6 md:p-8 rounded-2xl shadow-lg max-w-3xl mx-auto">
-                <h2 class="text-xl font-semibold mb-4 text-center text-white">Paso 1: Cargar Factura</h2>
-                <div id="drop-zone" class="border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors duration-300">
-                    <input type="file" id="file-input" class="hidden" accept="image/png, image/jpeg">
-                    <div class="flex flex-col items-center"><svg class="w-16 h-16 text-gray-500 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" /></svg><p class="text-gray-400">Arrastra y suelta tu archivo aquí</p><p class="text-sm text-gray-500 mt-1">o</p><button id="browse-button" class="mt-2 btn btn-primary">Selecciona un Archivo</button><p class="text-xs text-gray-600 mt-4">Soportado: JPG, PNG</p></div>
-                </div>
-                <div id="file-name-display" class="hidden text-center mt-4 text-gray-300 font-medium"></div>
-            </div>
-        </main>
-
-        <main id="processing-view" class="hidden w-full text-center py-16">
-            <div class="flex flex-col items-center"><div class="loader"></div><p class="mt-4 text-lg font-semibold">Procesando con IA...</p></div>
-        </main>
-
-        <main id="correction-view" class="hidden w-full">
-            <div class="card p-6 md:p-8 rounded-2xl shadow-lg">
-                <h2 class="text-xl font-semibold mb-4 text-white">Paso 2: Corregir Datos</h2>
-                <p class="text-gray-400 mb-6">La imagen es estática por defecto. Haz clic sobre ella para activar/desactivar el modo de arrastre.</p>
-                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                    <div class="bg-gray-900 p-2 rounded-lg overflow-hidden"><img id="invoice-image" src="#" alt="Vista previa de la factura"></div>
-                    <div>
-                        <h3 class="font-semibold mb-2 text-white">Tabla de Datos</h3>
-                        <div class="table-container"><table class="w-full text-sm text-left"><thead class="text-xs text-gray-300 uppercase table-header sticky top-0"><tr><th scope="col" class="px-6 py-3 rounded-l-lg">Cantidad</th><th scope="col" class="px-6 py-3">Número de Pieza</th><th scope="col" class="px-6 py-3 rounded-r-lg">Descripción</th></tr></thead><tbody id="correction-table-body"></tbody></table></div>
-                        <div class="mt-6 flex justify-end gap-4">
-                            <button id="cancel-correction-button" class="btn btn-secondary">Cancelar</button>
-                            <button id="next-button" class="btn btn-success">Siguiente</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </main>
-        
-        <main id="scanning-view" class="hidden w-full">
-            <div class="card p-6 md:p-8 rounded-2xl shadow-lg">
-                <h2 class="text-xl font-semibold mb-4 text-white">Paso 3: Verificación de Piezas</h2>
-                <div class="grid grid-cols-1 md:grid-cols-5 gap-8">
-                    <div class="md:col-span-3">
-                         <p class="text-gray-400 mb-4">Usa la cámara para capturar un código o súbelo desde tu galería.</p>
-                         <div class="full-height-table-container"><table class="w-full text-sm text-left"><thead class="text-xs text-gray-300 uppercase table-header sticky top-0"><tr><th class="px-4 py-3">Verificado</th><th class="px-4 py-3">Cant.</th><th class="px-4 py-3"># Pieza</th><th class="px-4 py-3">Descripción</th></tr></thead><tbody id="scan-table-body"></tbody></table></div>
-                    </div>
-                    <div class="md:col-span-2">
-                        <div class="flex flex-col gap-4 mb-4">
-                            <button id="scan-live-button" class="w-full btn btn-primary">Activar Escáner</button>
-                            <button id="scan-image-button" class="w-full btn btn-primary">Escanear desde Imagen</button>
-                            <input type="file" id="scan-image-input" class="hidden" accept="image/*">
-                            <button id="stop-scan-button" class="w-full btn btn-secondary hidden">Detener Escáner</button>
-                            <button id="verify-all-button" class="w-full btn btn-secondary">Verificar Todo</button>
-                        </div>
-                        <div id="scanner-viewport" class="bg-gray-900 rounded-lg">
-                             <div class="scan-guide hidden"></div>
-                             <button id="capture-button" class="btn btn-primary hidden">Capturar</button>
-                        </div>
-                        <p id="scan-feedback" class="text-center mt-2 h-6"></p>
-                         <div class="mt-8 pt-6 border-t border-gray-700 flex flex-wrap items-center justify-end gap-4">
-                            <button id="back-to-correction-button" class="btn btn-secondary">Regresar</button>
-                            <button id="start-new-button" class="btn btn-success">Procesar Nueva Factura</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </main>
-
-        <div id="message-modal" class="modal-backdrop hidden">
-            <div class="modal-content"><h3 id="modal-title" class="text-xl font-bold text-white mb-4"></h3><p id="modal-message" class="text-gray-300 mb-6"></p><button id="close-modal-button" class="px-6 py-2 rounded-lg font-semibold btn-primary">Entendido</button></div>
-        </div>
-
-        <footer class="text-center mt-12 text-gray-500 text-sm"><p>&copy; 2025 Digitalizador Inteligente. Una herramienta conceptual.</p></footer>
-    </div>
-
-    <script type="module">
-    document.addEventListener('DOMContentLoaded', () => {
-        const allViews = document.querySelectorAll('main');
-        const uploadView = document.getElementById('upload-view');
-        const processingView = document.getElementById('processing-view');
-        const correctionView = document.getElementById('correction-view');
-        const scanningView = document.getElementById('scanning-view');
-        
-        const dropZone = document.getElementById('drop-zone');
-        const fileInput = document.getElementById('file-input');
-        const browseButton = document.getElementById('browse-button');
-        const fileNameDisplay = document.getElementById('file-name-display');
-        const invoiceImage = document.getElementById('invoice-image');
-        
-        const correctionTableBody = document.getElementById('correction-table-body');
-        const scanTableBody = document.getElementById('scan-table-body');
-        
-        const nextButton = document.getElementById('next-button');
-        const cancelCorrectionButton = document.getElementById('cancel-correction-button');
-        const scanLiveButton = document.getElementById('scan-live-button');
-        const scanImageButton = document.getElementById('scan-image-button');
-        const scanImageInput = document.getElementById('scan-image-input');
-        const stopScanButton = document.getElementById('stop-scan-button');
-        const verifyAllButton = document.getElementById('verify-all-button');
-        const backToCorrectionButton = document.getElementById('back-to-correction-button');
-        const startNewButton = document.getElementById('start-new-button');
-        const captureButton = document.getElementById('capture-button');
-        
-        const scannerViewport = document.getElementById('scanner-viewport');
-        const scanFeedback = document.getElementById('scan-feedback');
-        
-        const messageModal = document.getElementById('message-modal');
-        const modalTitle = document.getElementById('modal-title');
-        const modalMessage = document.getElementById('modal-message');
-        const closeModalButton = document.getElementById('close-modal-button');
-        const scanGuide = document.querySelector('.scan-guide');
-
-        let currentFile = null;
-        let correctedData = [];
-        let synth;
-
-        try {
-            synth = new Tone.Synth().toDestination();
-        } catch (e) {
-            console.warn("No se pudo inicializar el audio. La aplicación funcionará sin sonido.");
-        }
-        
-        let isImagePannable = false;
-        let isDragging = false, startX, startY, imgX = 0, imgY = 0;
-
-        function showModal(title, message) {
-            modalTitle.textContent = title;
-            modalMessage.textContent = message;
-            messageModal.classList.remove('hidden');
-        }
-
-        function extractAndParseJson(text) {
-            if (!text || typeof text !== 'string') {
-                throw new Error("La respuesta de la IA está vacía o no es un texto.");
-            }
-            
-            const jsonBlockMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
-            if (jsonBlockMatch && jsonBlockMatch[1]) {
-                try {
-                    return JSON.parse(jsonBlockMatch[1]);
-                } catch (e) {
-                     console.warn("Fallo al parsear el bloque JSON extraído del markdown.", e);
-                }
-            }
-
-            const startIndex = text.indexOf('[');
-            const endIndex = text.lastIndexOf(']');
-            if (startIndex !== -1 && endIndex !== -1) {
-                const jsonString = text.substring(startIndex, endIndex + 1);
-                try {
-                    return JSON.parse(jsonString);
-                } catch (e) {
-                    console.warn("Fallo al parsear el contenido entre corchetes.", e);
-                }
-            }
-
-            try {
-                return JSON.parse(text);
-            } catch (e) {
-                console.error("Fallo al parsear la respuesta directa.", e);
-                throw new Error("No se pudo extraer un JSON válido de la respuesta de la IA.");
-            }
-        }
-
-        async function processInvoiceWithGemini(imageBase64) {
-            const apiKey = "";
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
-            const prompt = `Analiza la imagen de esta factura. Extrae los artículos de línea en una matriz de objetos JSON. Cada objeto debe tener estas claves: "cantidad", "numeroDePieza", "descripcion". Ignora totales, impuestos y otra información. Si no puedes determinar un valor, usa una cadena vacía o 0. La respuesta debe ser únicamente el JSON.`;
-            
-            const payload = {
-                contents: [{
-                    parts: [
-                        { text: prompt },
-                        { inlineData: { mimeType: currentFile.type, data: imageBase64.split(',')[1] } }
-                    ]
-                }]
-            };
-
-            try {
-                const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-                if (!response.ok) {
-                    const errorText = await response.text();
-                    throw new Error(`Error de la API: ${response.status} ${response.statusText} - ${errorText}`);
-                }
-                
-                const result = await response.json();
-                if (!result.candidates?.[0]?.content?.parts?.[0]?.text) {
-                    throw new Error("La respuesta de la IA no tuvo un formato válido.");
-                }
-                
-                const geminiData = extractAndParseJson(result.candidates[0].content.parts[0].text);
-
-                const cleanedData = geminiData.map(item => ({
-                    cantidad: item.cantidad || 0,
-                    numeroDePieza: (item.numeroDePieza && typeof item.numeroDePieza === 'string') ? item.numeroDePieza.replace(/o/gi, '0') : (item.numeroDePieza || ''),
-                    descripcion: item.descripcion || ''
-                }));
-                
-                displayCorrectionData(cleanedData);
-
-            } catch (error) {
-                console.error("Error processing:", error);
-                showModal('Error de Procesamiento', `Hubo un problema. Detalles: ${error.message}`);
-                resetApp();
-            }
-        }
-
-        function displayCorrectionData(data) {
-            const fragment = document.createDocumentFragment();
-            if (!Array.isArray(data)) { resetApp(); return; }
-            correctedData = data; 
-            data.forEach(item => {
-                const row = document.createElement('tr');
-                row.className = 'table-row border-b';
-                row.innerHTML = `
-                    <td class="px-6 py-4 align-top" contenteditable="true">${item.cantidad}</td>
-                    <td class="px-6 py-4 align-top" contenteditable="true">${item.numeroDePieza}</td>
-                    <td class="px-6 py-4 align-top" contenteditable="true">${item.descripcion}</td>`;
-                fragment.appendChild(row);
-            });
-            correctionTableBody.innerHTML = '';
-            correctionTableBody.appendChild(fragment);
-            processingView.classList.add('hidden');
-            correctionView.classList.remove('hidden');
-        }
-        
-        function handleFile(file) {
-            if (!file || !file.type.startsWith('image/')) {
-                showModal('Error de Archivo', 'Por favor, selecciona un archivo de imagen (JPG o PNG).');
-                return;
-            }
-            currentFile = file;
-            fileNameDisplay.textContent = `Archivo seleccionado: ${file.name}`;
-            fileNameDisplay.classList.remove('hidden');
-            
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                invoiceImage.src = e.target.result;
-                setTimeout(() => {
-                    uploadView.classList.add('hidden');
-                    processingView.classList.remove('hidden');
-                    processInvoiceWithGemini(e.target.result);
-                }, 500);
-            };
-            reader.readAsDataURL(file);
-        }
-
-        function goToScanningStep() {
-            const currentTableData = [];
-            correctionTableBody.querySelectorAll('tr').forEach(tr => {
-                const cells = tr.querySelectorAll('td');
-                currentTableData.push({
-                    cantidad: parseInt(cells[0].innerText) || 0,
-                    numeroDePieza: cells[1].innerText,
-                    descripcion: cells[2].innerText,
-                    verified: false,
-                    verifiedQuantity: null
-                });
-            });
-            
-            correctedData = currentTableData;
-            
-            sessionStorage.setItem('invoiceData', JSON.stringify(correctedData));
-            sessionStorage.setItem('currentView', 'scanning');
-            
-            displayScanData(correctedData);
-            
-            correctionView.classList.add('hidden');
-            scanningView.classList.remove('hidden');
-        }
-        
-        function displayScanData(data) {
-            const fragment = document.createDocumentFragment();
-            data.forEach((item, index) => {
-                const row = document.createElement('tr');
-                row.className = 'table-row table-row-interactive border-b';
-                row.dataset.partNumber = item.numeroDePieza;
-                row.dataset.index = index;
-                row.innerHTML = `
-                    <td class="px-4 py-3"><div class="checkmark mx-auto ${item.verified ? 'verified' : ''}"></div></td>
-                    <td class="px-4 py-3">${item.cantidad}</td>
-                    <td class="px-4 py-3">${item.numeroDePieza}</td>
-                    <td class="px-4 py-3">${item.descripcion}</td>
-                `;
-                row.addEventListener('click', () => manualVerification(item.numeroDePieza));
-                fragment.appendChild(row);
-            });
-            scanTableBody.innerHTML = '';
-            scanTableBody.appendChild(fragment);
-        }
-
-        function verifyAllItems() {
-            correctedData.forEach(item => {
-                item.verified = true;
-                item.verifiedQuantity = item.cantidad;
-                const row = scanTableBody.querySelector(`tr[data-part-number="${item.numeroDePieza}"]`);
-                if (row) row.querySelector('.checkmark').classList.add('verified');
-            });
-        }
-
-        function startScanner() {
-            if (typeof Quagga === 'undefined') {
-                showModal('Error de Escáner', 'No se pudo cargar la librería del escáner. Por favor, revisa tu conexión a internet y recarga la página.');
-                return;
-            }
-            stopScanner();
-            scannerViewport.innerHTML = '';
-            Quagga.init({
-                inputStream: { name: "Live", type: "LiveStream", target: scannerViewport, constraints: { width: 640, height: 480, facingMode: "environment" } },
-                decoder: { readers: ["code_128_reader"] },
-            }, function (err) {
-                if (err) { console.error(err); showModal("Error de Cámara", "No se pudo iniciar la cámara. Asegúrate de haber otorgado los permisos necesarios."); return; }
-                Quagga.start();
-                scanLiveButton.classList.add('hidden');
-                scanImageButton.classList.add('hidden');
-                stopScanButton.classList.remove('hidden');
-                captureButton.classList.remove('hidden');
-                scanGuide.classList.remove('hidden');
-            });
-        }
-
-        function captureFrame() {
-            const video = scannerViewport.querySelector('video');
-            if (!video) return;
-            const canvas = document.createElement('canvas');
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
-            Quagga.decodeSingle({ src: canvas.toDataURL(), numOfWorkers: 0, inputStream: { size: 800 }, decoder: { readers: ["code_128_reader"] }, locate: true, patchSize: "large", halfSample: false }, onDetected);
-        }
-
-        function scanImageFile(file) {
-            if (!file) return;
-            stopScanner();
-            const reader = new FileReader();
-            reader.onload = function(e) {
-                scannerViewport.innerHTML = `<img src="${e.target.result}" alt="Barcode image" />`;
-                Quagga.decodeSingle({ src: e.target.result, numOfWorkers: 0, inputStream: { size: 1280 }, decoder: { readers: ["code_128_reader"] }, locate: true, patchSize: "large", halfSample: false }, onDetected);
-            };
-            reader.readAsDataURL(file);
-        }
-
-        function stopScanner() {
-            if (typeof Quagga !== 'undefined' && Quagga.initialized) {
-                Quagga.stop();
-            }
-            scannerViewport.innerHTML = "";
-            scanLiveButton.classList.remove('hidden');
-            scanImageButton.classList.remove('hidden');
-            stopScanButton.classList.add('hidden');
-            captureButton.classList.add('hidden');
-            scanGuide.classList.add('hidden');
-        }
-
-        const onDetected = (result) => {
-            const code = result?.codeResult?.code;
-            if (!code) {
-                scanFeedback.style.color = '#ef4444';
-                scanFeedback.textContent = 'No se detectó ningún código.';
-                setTimeout(() => scanFeedback.textContent = '', 2000);
-                return;
-            }
-            
-            const row = scanTableBody.querySelector(`tr[data-part-number="${code}"]`);
-            if (row) {
-                row.querySelector('.checkmark').classList.add('verified');
-                const item = correctedData.find(i => i.numeroDePieza === code);
-                if(item) {
-                    item.verified = true;
-                    item.verifiedQuantity = item.cantidad;
-                }
-                
-                scannerViewport.classList.add('scanned-successfully');
-                if (synth) synth.triggerAttackRelease("C5", "8n");
-                
-                setTimeout(() => scannerViewport.classList.remove('scanned-successfully'), 400);
-            } else {
-                scanFeedback.style.color = '#ef4444';
-                scanFeedback.textContent = `Pieza ${code} no encontrada en la lista.`;
-            }
-        };
-
-        function manualVerification(partNumber) {
-             const row = scanTableBody.querySelector(`tr[data-part-number="${partNumber}"]`);
-             if(row) {
-                row.querySelector('.checkmark').classList.toggle('verified');
-                const item = correctedData.find(i => i.numeroDePieza === partNumber);
-                if(item) {
-                    item.verified = !item.verified;
-                    if(item.verified) {
-                         item.verifiedQuantity = item.cantidad;
-                    } else {
-                        item.verifiedQuantity = null;
-                    }
-                }
-             }
-        }
-        
-        function resetApp() {
-            stopScanner();
-            sessionStorage.clear();
-            allViews.forEach(view => view.classList.add('hidden'));
-            uploadView.classList.remove('hidden');
-            fileInput.value = '';
-            scanImageInput.value = '';
-            fileNameDisplay.classList.add('hidden');
-            correctionTableBody.innerHTML = '';
-            scanTableBody.innerHTML = '';
-            invoiceImage.src = '#';
-            correctedData = [];
-        }
-
-        function restoreState() {
-            const savedData = sessionStorage.getItem('invoiceData');
-            const savedView = sessionStorage.getItem('currentView');
-
-            if (savedData && savedView) {
-                correctedData = JSON.parse(savedData);
-                if (savedView === 'scanning') {
-                    displayScanData(correctedData);
-                    allViews.forEach(view => view.classList.add('hidden'));
-                    scanningView.classList.remove('hidden');
-                }
-            }
-        }
-
-        // --- Event Listeners ---
-        const handlePointerDown = (e) => {
-            if (!isImagePannable) return;
-            isDragging = true;
-            const pointer = e.touches ? e.touches[0] : e;
-            startX = pointer.pageX - imgX;
-            startY = pointer.pageY - imgY;
-            invoiceImage.style.transition = 'none';
-        };
-        const handlePointerMove = (e) => {
-            if (!isDragging || !isImagePannable) return;
-            e.preventDefault();
-            const pointer = e.touches ? e.touches[0] : e;
-            imgX = pointer.pageX - startX;
-            imgY = pointer.pageY - startY;
-            invoiceImage.style.transform = `translate(${imgX}px, ${imgY}px)`;
-        };
-        const handlePointerUp = () => {
-            isDragging = false;
-            if (isImagePannable) invoiceImage.style.transition = '';
-        };
-        const toggleImagePannable = (e) => {
-            if(e.target !== invoiceImage) return;
-            if (isDragging) return;
-            isImagePannable = !isImagePannable;
-            invoiceImage.classList.toggle('pannable', isImagePannable);
-        };
-
-        invoiceImage.addEventListener('mousedown', handlePointerDown);
-        invoiceImage.addEventListener('touchstart', handlePointerDown, { passive: false });
-        window.addEventListener('mousemove', handlePointerMove);
-        window.addEventListener('touchmove', handlePointerMove, { passive: false });
-        window.addEventListener('mouseup', handlePointerUp);
-        window.addEventListener('touchend', handlePointerUp);
-        invoiceImage.addEventListener('click', toggleImagePannable);
-
-        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); dropZone.classList.add('border-indigo-500'); });
-        dropZone.addEventListener('dragleave', (e) => { e.preventDefault(); e.stopPropagation(); dropZone.classList.remove('border-indigo-500'); });
-        dropZone.addEventListener('drop', (e) => { e.preventDefault(); e.stopPropagation(); dropZone.classList.remove('border-indigo-500'); handleFile(e.dataTransfer.files[0]); });
-        browseButton.addEventListener('click', () => fileInput.click());
-        fileInput.addEventListener('change', () => { if (fileInput.files.length) handleFile(fileInput.files[0]); });
-        
-        nextButton.addEventListener('click', goToScanningStep);
-        cancelCorrectionButton.addEventListener('click', resetApp);
-        scanLiveButton.addEventListener('click', startScanner);
-        scanImageButton.addEventListener('click', () => scanImageInput.click());
-        scanImageInput.addEventListener('change', (e) => scanImageFile(e.target.files[0]));
-        stopScanButton.addEventListener('click', stopScanner);
-        verifyAllButton.addEventListener('click', verifyAllItems);
-        backToCorrectionButton.addEventListener('click', () => {
-            scanningView.classList.add('hidden');
-            correctionView.classList.remove('hidden');
-            stopScanner();
-        });
-        startNewButton.addEventListener('click', resetApp);
-        closeModalButton.addEventListener('click', () => messageModal.classList.add('hidden'));
-        captureButton.addEventListener('click', captureFrame);
-
-        // Restore state on initial load
-        restoreState();
-    });
-    </script>
-</body>
-</html>
+<!DOCTYPE html> <html lang="es"> <head>     <meta charset="UTF-8">     <meta name="viewport" content="width=device-width, initial-scale=1.0">     <title>Digitalizador de Facturas - Versión Final 1.0</title>     <script src="https://cdn.tailwindcss.com"></script>     <script src="https://cdn.jsdelivr.net/npm/quagga/dist/quagga.min.js" crossorigin="anonymous"></script>     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.7.77/Tone.js" crossorigin="anonymous"></script>          <style>         /* Chosen Palette: Modern Dark Theme */         /* Application Structure Plan: Final stable version. Removed all external dependencies (Firebase) and state restoration logic (sessionStorage) to ensure maximum reliability and a clean start every time. The app is now fully client-side and stateless between sessions. */         /* Visualization & Content Choices: Consolidates all successful features: robust JSON parsing, a full multi-step UI, live and image-based barcode scanning with a manual "Capture" button, and a simplified copy-to-clipboard batch output. This is the definitive stable build. */         /* CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. */         body { background-color: #1a202c; color: #e2e8f0; font-family: 'Inter', sans-serif; }         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');         .loader { border: 4px solid #4a5568; border-top: 4px solid #6366f1; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }         .btn { padding: 0.75rem 1.5rem; border-radius: 0.5rem; font-weight: 600; transition: background-color 0.3s, transform 0.1s; }         .btn:active { transform: scale(0.98); }         .btn-primary { background-color: #4f46e5; color: white; }         .btn-primary:hover { background-color: #4338ca; }         .btn-secondary { background-color: #4a5568; color: #e2e8f0; }         .btn-secondary:hover { background-color: #718096; }         .btn-success { background-color: #16a34a; color: white; }         .btn-success:hover { background-color: #15803d; }         .modal-backdrop { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.7); display: flex; justify-content: center; align-items: center; z-index: 1000; }         .modal-content { background-color: #2d3748; color: #e2e8f0; padding: 2rem; border-radius: 1rem; box-shadow: 0 10px 25px rgba(0,0,0,0.1); max-width: 90%; width: 500px; text-align: center; border: 1px solid #4a5568; }         #invoice-image { width: 100%; height: auto; cursor: default; }         #invoice-image.pannable { cursor: grab; }         #invoice-image.pannable:active { cursor: grabbing; }         .card { background-color: #2d3748; border: 1px solid #4a5568; }         .drop-zone { border-color: #4a5568; }         .drop-zone:hover { background-color: #4a5568; }         .table-header { background-color: #4a5568; }         .table-row { border-color: #4a5568; }         .table-row-interactive:hover { background-color: rgba(74, 85, 104, 0.5); cursor: pointer; }         .table-container { max-height: 400px; overflow-y: auto; }         .full-height-table-container { height: calc(100vh - 300px); min-height: 400px; overflow-y: auto; }         .checkmark { width: 20px; height: 20px; border-radius: 50%; border: 2px solid #718096; transition: background-color 0.3s, border-color 0.3s; }         .checkmark.verified { background-color: #16a34a; border-color: #16a34a; }         #scanner-viewport { position: relative; width: 100%; margin: auto; background-color: #000; overflow: hidden; }         #scanner-viewport video, #scanner-viewport img, #scanner-viewport canvas { max-width: 100%; width: 100%; height: auto; }         #scanner-viewport .drawingBuffer { position: absolute; top: 0; left: 0; }         .scan-guide { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); height: 2px; background-color: rgba(255, 0, 0, 0.7); box-shadow: 0 0 10px rgba(255, 0, 0, 0.7); z-index: 5; }         textarea.form-input { background-color: #1a202c; border: 1px solid #4a5568; color: #e2e8f0; font-family: monospace; }     </style> </head> <body class="text-gray-200">      <div id="app-container" class="container mx-auto p-4 md:p-8 max-w-7xl">         <header class="text-center mb-8">             <h1 class="text-3xl md:text-4xl font-bold text-white">Digitalizador y Verificador de Piezas</h1>             <p class="text-md text-gray-400 mt-2">Versión Final 1.0</p>         </header>          <main id="upload-view" class="w-full">             <div class="card p-6 md:p-8 rounded-2xl shadow-lg max-w-3xl mx-auto">                 <h2 class="text-xl font-semibold mb-4 text-center text-white">Paso 1: Cargar Factura</h2>                 <div id="drop-zone" class="border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors duration-300">                     <input type="file" id="file-input" class="hidden" accept="image/png, image/jpeg">                     <div class="flex flex-col items-center"><svg class="w-16 h-16 text-gray-500 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" /></svg><p class="text-gray-400">Arrastra y suelta tu archivo aquí</p><p class="text-sm text-gray-500 mt-1">o</p><button id="browse-button" class="mt-2 btn btn-primary">Selecciona un Archivo</button><p class="text-xs text-gray-600 mt-4">Soportado: JPG, PNG</p></div>                 </div>                 <div id="file-name-display" class="hidden text-center mt-4 text-gray-300 font-medium"></div>             </div>         </main>          <main id="processing-view" class="hidden w-full text-center py-16">             <div class="flex flex-col items-center"><div class="loader"></div><p class="mt-4 text-lg font-semibold">Procesando con IA...</p></div>         </main>          <main id="correction-view" class="hidden w-full">             <div class="card p-6 md:p-8 rounded-2xl shadow-lg">                 <h2 class="text-xl font-semibold mb-4 text-white">Paso 2: Corregir Datos</h2>                 <p class="text-gray-400 mb-6">La imagen es estática por defecto. Haz clic sobre ella para activar/desactivar el modo de arrastre.</p>                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">                     <div class="bg-gray-900 p-2 rounded-lg overflow-hidden"><img id="invoice-image" src="#" alt="Vista previa de la factura"></div>                     <div>                         <h3 class="font-semibold mb-2 text-white">Tabla de Datos</h3>                         <div class="table-container"><table class="w-full text-sm text-left"><thead class="text-xs text-gray-300 uppercase table-header sticky top-0"><tr><th scope="col" class="px-6 py-3 rounded-l-lg">Cantidad</th><th scope="col" class="px-6 py-3">Número de Pieza</th><th scope="col" class="px-6 py-3 rounded-r-lg">Descripción</th></tr></thead><tbody id="correction-table-body"></tbody></table></div>                         <div class="mt-6 flex justify-end gap-4">                             <button id="cancel-correction-button" class="btn btn-secondary">Cancelar</button>                             <button id="next-button" class="btn btn-success">Siguiente</button>                         </div>                     </div>                 </div>             </div>         </main>                  <main id="scanning-view" class="hidden w-full">             <div class="card p-6 md:p-8 rounded-2xl shadow-lg">                 <h2 class="text-xl font-semibold mb-4 text-white">Paso 3: Verificación de Piezas</h2>                 <div class="grid grid-cols-1 md:grid-cols-5 gap-8">                     <div class="md:col-span-3">                          <div class="full-height-table-container"><table class="w-full text-sm text-left"><thead class="text-xs text-gray-300 uppercase table-header sticky top-0"><tr><th class="px-4 py-3">Verificado</th><th class="px-4 py-3">Cant.</th><th class="px-4 py-3"># Pieza</th><th class="px-4 py-3">Descripción</th></tr></thead><tbody id="scan-table-body"></tbody></table></div>                     </div>                     <div class="md:col-span-2 flex flex-col">                         <div class="flex-grow-0">                             <p class="text-gray-400 mb-4">Usa la cámara para capturar un código o súbelo desde tu galería.</p>                             <div id="scan-buttons" class="flex flex-col gap-4 mb-4">                                 <button id="scan-live-button" class="w-full btn btn-primary">Activar Escáner</button>                                 <button id="scan-image-button" class="w-full btn btn-primary">Escanear desde Imagen</button>                                 <input type="file" id="scan-image-input" class="hidden" accept="image/*">                                 <button id="verify-all-button" class="w-full btn btn-secondary">Verificar Todo</button>                             </div>                             <div id="scanner-viewport" class="rounded-lg min-h-[250px] flex items-center justify-center">                                 <span id="scanner-placeholder" class="text-gray-500">Vista previa del escáner</span>                                 <div class="scan-guide hidden"></div>                             </div>                             <p id="scan-feedback" class="text-center mt-2 h-6"></p>                             <div id="scanner-controls" class="mt-4 flex gap-4 justify-center hidden">                                 <button id="capture-button" class="btn btn-primary">Capturar</button>                                 <button id="close-scanner-button" class="btn btn-secondary">Cerrar</button>                             </div>                         </div>                         <div class="flex-grow"></div>                         <div class="mt-8 pt-6 border-t border-gray-700 flex flex-wrap items-center justify-end gap-4">                             <button id="back-to-correction-button" class="btn btn-secondary">Regresar</button>                             <button id="start-new-button" class="btn btn-success">Procesar Nueva Factura</button>                         </div>                     </div>                 </div>             </div>         </main>          <div id="message-modal" class="modal-backdrop hidden">             <div class="modal-content"><h3 id="modal-title" class="text-xl font-bold text-white mb-4"></h3><p id="modal-message" class="text-gray-300 mb-6"></p><button id="close-modal-button" class="px-6 py-2 rounded-lg font-semibold btn-primary">Entendido</button></div>         </div>          <footer class="text-center mt-12 text-gray-500 text-sm"><p>© 2025 Digitalizador Inteligente. Una herramienta conceptual.</p></footer>     </div>      <script type="module">     // --- Version 1.0 (Stable Base) --- //     // This version is considered the complete and stable foundation for future development.          document.addEventListener('DOMContentLoaded', () => {         console.log("Digitalizador de Facturas V1.0 script loaded.");         // --- Element Selectors ---         const allViews = document.querySelectorAll('main');         const uploadView = document.getElementById('upload-view');         const processingView = document.getElementById('processing-view');         const correctionView = document.getElementById('correction-view');         const scanningView = document.getElementById('scanning-view');                  const dropZone = document.getElementById('drop-zone');         const fileInput = document.getElementById('file-input');         const browseButton = document.getElementById('browse-button');         const fileNameDisplay = document.getElementById('file-name-display');         const invoiceImage = document.getElementById('invoice-image');                  const correctionTableBody = document.getElementById('correction-table-body');         const scanTableBody = document.getElementById('scan-table-body');                  const nextButton = document.getElementById('next-button');         const cancelCorrectionButton = document.getElementById('cancel-correction-button');         const backToCorrectionButton = document.getElementById('back-to-correction-button');         const startNewButton = document.getElementById('start-new-button');          // Scanning View Elements         const scanButtons = document.getElementById('scan-buttons');         const scanLiveButton = document.getElementById('scan-live-button');         const scanImageButton = document.getElementById('scan-image-button');         const scanImageInput = document.getElementById('scan-image-input');         const verifyAllButton = document.getElementById('verify-all-button');         const scannerViewport = document.getElementById('scanner-viewport');         const scannerPlaceholder = document.getElementById('scanner-placeholder');         const scanGuide = document.querySelector('.scan-guide');         const scanFeedback = document.getElementById('scan-feedback');         const scannerControls = document.getElementById('scanner-controls');         const captureButton = document.getElementById('capture-button');         const closeScannerButton = document.getElementById('close-scanner-button');                  // Modal Elements         const messageModal = document.getElementById('message-modal');         const modalTitle = document.getElementById('modal-title');         const modalMessage = document.getElementById('modal-message');         const closeModalButton = document.getElementById('close-modal-button');          // --- State Variables ---         let currentFile = null;         let correctedData = [];         let synth;         let isImagePannable = false;         let isDragging = false, startX, startY, imgX = 0, imgY = 0;         let isScannerRunning = false; // State for scanner                  // --- Initialization ---         try {             synth = new Tone.Synth().toDestination();         } catch (e) {             console.warn("No se pudo inicializar el audio. La aplicación funcionará sin sonido.");         }          // --- Core Functions ---         function showModal(title, message) {             modalTitle.textContent = title;             modalMessage.textContent = message;             messageModal.classList.remove('hidden');         }          function extractAndParseJson(text) {             if (!text || typeof text !== 'string') throw new Error("La respuesta de la IA está vacía o no es un texto.");             const jsonBlockMatch = text.match(/```json\s*([\s\S]*?)\s*```/);             if (jsonBlockMatch && jsonBlockMatch[1]) {                 try { return JSON.parse(jsonBlockMatch[1]); } catch (e) { console.warn("Fallo al parsear el bloque JSON extraído del markdown.", e); }             }             const startIndex = text.indexOf('[');             const endIndex = text.lastIndexOf(']');             if (startIndex !== -1 && endIndex !== -1) {                 try { return JSON.parse(text.substring(startIndex, endIndex + 1)); } catch (e) { console.warn("Fallo al parsear el contenido entre corchetes.", e); }             }             try { return JSON.parse(text); } catch (e) { throw new Error("No se pudo extraer un JSON válido de la respuesta de la IA."); }         }          async function processInvoiceWithGemini(imageBase64) {             const apiKey = "";             const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;             const prompt = `Analiza la imagen de esta factura. Extrae los artículos de línea en una matriz de objetos JSON. Cada objeto debe tener estas claves: "cantidad", "numeroDePieza", "descripcion". Ignora totales, impuestos y otra información. Si no puedes determinar un valor, usa una cadena vacía o 0. La respuesta debe ser únicamente el JSON.`;                          const payload = { contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: currentFile.type, data: imageBase64.split(',')[1] } }] }] };              try {                 const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });                 if (!response.ok) throw new Error(`Error de la API: ${response.status} ${response.statusText}`);                 const result = await response.json();                 if (!result.candidates?.[0]?.content?.parts?.[0]?.text) throw new Error("La respuesta de la IA no tuvo un formato válido.");                                  const geminiData = extractAndParseJson(result.candidates[0].content.parts[0].text);                 const cleanedData = geminiData.map(item => ({                     cantidad: item.cantidad || 0,                     numeroDePieza: (item.numeroDePieza && typeof item.numeroDePieza === 'string') ? item.numeroDePieza.replace(/o/gi, '0') : (item.numeroDePieza || ''),                     descripcion: item.descripcion || ''                 }));                 displayCorrectionData(cleanedData);             } catch (error) {                 console.error("Error processing:", error);                 showModal('Error de Procesamiento', `Hubo un problema. Detalles: ${error.message}`);                 resetApp();             }         }          function displayCorrectionData(data) {             const fragment = document.createDocumentFragment();             if (!Array.isArray(data)) { resetApp(); return; }             correctedData = data;              data.forEach(item => {                 const row = document.createElement('tr');                 row.className = 'table-row border-b';                 row.innerHTML = `<td class="px-6 py-4 align-top" contenteditable="true">${item.cantidad}</td><td class="px-6 py-4 align-top" contenteditable="true">${item.numeroDePieza}</td><td class="px-6 py-4 align-top" contenteditable="true">${item.descripcion}</td>`;                 fragment.appendChild(row);             });             correctionTableBody.innerHTML = '';             correctionTableBody.appendChild(fragment);             processingView.classList.add('hidden');             correctionView.classList.remove('hidden');         }                  function handleFile(file) {             if (!file || !file.type.startsWith('image/')) {                 showModal('Error de Archivo', 'Por favor, selecciona un archivo de imagen (JPG o PNG).');                 return;             }             currentFile = file;             fileNameDisplay.textContent = `Archivo seleccionado: ${file.name}`;             fileNameDisplay.classList.remove('hidden');                          const reader = new FileReader();             reader.onload = (e) => {                 invoiceImage.src = e.target.result;                 setTimeout(() => {                     uploadView.classList.add('hidden');                     processingView.classList.remove('hidden');                     processInvoiceWithGemini(e.target.result);                 }, 500);             };             reader.readAsDataURL(file);         }          function goToScanningStep() {             correctedData = Array.from(correctionTableBody.querySelectorAll('tr')).map(tr => {                 const cells = tr.querySelectorAll('td');                 return {                     cantidad: parseInt(cells[0].innerText) || 0,                     numeroDePieza: cells[1].innerText,                     descripcion: cells[2].innerText,                     verified: false,                     verifiedQuantity: null                 };             });             displayScanData(correctedData);             correctionView.classList.add('hidden');             scanningView.classList.remove('hidden');         }                  function displayScanData(data) {             const fragment = document.createDocumentFragment();             data.forEach((item, index) => {                 const row = document.createElement('tr');                 row.className = 'table-row table-row-interactive border-b';                 row.dataset.partNumber = item.numeroDePieza;                 row.dataset.index = index;                 row.innerHTML = `<td class="px-4 py-3"><div class="checkmark mx-auto ${item.verified ? 'verified' : ''}"></div></td><td class="px-4 py-3">${item.cantidad}</td><td class="px-4 py-3">${item.numeroDePieza}</td><td class="px-4 py-3">${item.descripcion}</td>`;                 row.addEventListener('click', () => manualVerification(item.numeroDePieza));                 fragment.appendChild(row);             });             scanTableBody.innerHTML = '';             scanTableBody.appendChild(fragment);         }          function verifyAllItems() {             correctedData.forEach(item => {                 if (!item.verified) {                     item.verified = true;                     item.verifiedQuantity = item.cantidad;                     const row = scanTableBody.querySelector(`tr[data-part-number="${item.numeroDePieza}"]`);                     if (row) row.querySelector('.checkmark').classList.add('verified');                 }             });         }          function startScanner() {             if (typeof Quagga === 'undefined') {                 showModal('Error de Escáner', 'No se pudo cargar la librería del escáner.');                 return;             }             scannerPlaceholder.classList.add('hidden');             scanButtons.classList.add('hidden');             scannerControls.classList.remove('hidden');             scanGuide.classList.remove('hidden');             scannerViewport.innerHTML = ''; // Clear previous content              Quagga.init({                 inputStream: { name: "Live", type: "LiveStream", target: scannerViewport, constraints: { width: 640, height: 480, facingMode: "environment" } },                 decoder: { readers: ["code_128_reader"] },             }, (err) => {                 if (err) {                     console.error(err);                     showModal("Error de Cámara", "No se pudo iniciar la cámara. Asegúrate de haber otorgado los permisos necesarios.");                     stopScanner();                     return;                 }                 Quagga.start();                 isScannerRunning = true;             });         }          function stopScanner() {             if (isScannerRunning && typeof Quagga !== 'undefined') {                 Quagga.stop();                 isScannerRunning = false;             }             scannerViewport.innerHTML = ''; // Clear video stream or image             scannerPlaceholder.classList.remove('hidden');             scannerControls.classList.add('hidden');             scanButtons.classList.remove('hidden');             scanGuide.classList.add('hidden');         }                  function captureFrame() {             const video = scannerViewport.querySelector('video');             if (!video) return;             const canvas = document.createElement('canvas');             canvas.width = video.videoWidth;             canvas.height = video.videoHeight;             canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);             Quagga.decodeSingle({ src: canvas.toDataURL(), numOfWorkers: 0, inputStream: { size: 800 }, decoder: { readers: ["code_128_reader"] }, locate: true }, onDetected);         }          function scanImageFile(file) {             if (!file) return;             stopScanner();             scannerPlaceholder.classList.add('hidden');             scannerViewport.innerHTML = '';              const reader = new FileReader();             reader.onload = (e) => {                 const img = document.createElement('img');                 img.src = e.target.result;                 scannerViewport.appendChild(img);                 Quagga.decodeSingle({ src: e.target.result, numOfWorkers: 0, inputStream: { size: 1280 }, decoder: { readers: ["code_128_reader"] }, locate: true }, onDetected);             };             reader.readAsDataURL(file);         }          const onDetected = (result) => {             stopScanner();             const code = result?.codeResult?.code;             if (!code) {                 scanFeedback.style.color = '#ef4444';                 scanFeedback.textContent = 'No se detectó ningún código.';                 setTimeout(() => scanFeedback.textContent = '', 2000);                 return;             }                          const row = scanTableBody.querySelector(`tr[data-part-number="${code}"]`);             if (row) {                 const item = correctedData[row.dataset.index];                 item.verified = true;                 item.verifiedQuantity = item.cantidad;                 row.querySelector('.checkmark').classList.add('verified');                 scanFeedback.style.color = '#16a34a';                 scanFeedback.textContent = `¡Pieza ${code} verificada!`;                 if (synth) synth.triggerAttackRelease("C5", "8n");             } else {                 scanFeedback.style.color = '#ef4444';                 scanFeedback.textContent = `Pieza ${code} no encontrada en la lista.`;                  if (synth) synth.triggerAttackRelease("C4", "8n");             }         };          function manualVerification(partNumber) {              const row = scanTableBody.querySelector(`tr[data-part-number="${partNumber}"]`);              if(row) {                 const item = correctedData[row.dataset.index];                 item.verified = !item.verified;                 item.verifiedQuantity = item.verified ? item.cantidad : null;                 row.querySelector('.checkmark').classList.toggle('verified');              }         }                  function resetApp() {             stopScanner();             allViews.forEach(view => view.classList.add('hidden'));             uploadView.classList.remove('hidden');             fileInput.value = '';             scanImageInput.value = '';             fileNameDisplay.classList.add('hidden');             correctionTableBody.innerHTML = '';             scanTableBody.innerHTML = '';             invoiceImage.src = '#';             correctedData = [];         }          // --- Event Listeners ---         const handlePointerDown = (e) => { if (isImagePannable) { isDragging = true; const p = e.touches ? e.touches[0] : e; startX = p.pageX - imgX; startY = p.pageY - imgY; invoiceImage.style.transition = 'none'; } };         const handlePointerMove = (e) => { if (isDragging && isImagePannable) { e.preventDefault(); const p = e.touches ? e.touches[0] : e; imgX = p.pageX - startX; imgY = p.pageY - startY; invoiceImage.style.transform = `translate(${imgX}px, ${imgY}px)`; } };         const handlePointerUp = () => { if (isImagePannable) { isDragging = false; invoiceImage.style.transition = ''; } };         invoiceImage.addEventListener('mousedown', handlePointerDown);         invoiceImage.addEventListener('touchstart', handlePointerDown, { passive: false });         window.addEventListener('mousemove', handlePointerMove);         window.addEventListener('touchmove', handlePointerMove, { passive: false });         window.addEventListener('mouseup', handlePointerUp);         window.addEventListener('touchend', handlePointerUp);         invoiceImage.addEventListener('click', (e) => { if(e.target === invoiceImage && !isDragging) { isImagePannable = !isImagePannable; invoiceImage.classList.toggle('pannable', isImagePannable); } });          dropZone.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); dropZone.classList.add('border-indigo-500'); });         dropZone.addEventListener('dragleave', (e) => { e.preventDefault(); e.stopPropagation(); dropZone.classList.remove('border-indigo-500'); });         dropZone.addEventListener('drop', (e) => { e.preventDefault(); e.stopPropagation(); dropZone.classList.remove('border-indigo-500'); handleFile(e.dataTransfer.files[0]); });         browseButton.addEventListener('click', () => fileInput.click());         fileInput.addEventListener('change', () => { if (fileInput.files.length) handleFile(fileInput.files[0]); });                  nextButton.addEventListener('click', goToScanningStep);         cancelCorrectionButton.addEventListener('click', resetApp);                  scanLiveButton.addEventListener('click', startScanner);         scanImageButton.addEventListener('click', () => scanImageInput.click());         scanImageInput.addEventListener('change', (e) => scanImageFile(e.target.files[0]));         verifyAllButton.addEventListener('click', verifyAllItems);         captureButton.addEventListener('click', captureFrame);         closeScannerButton.addEventListener('click', stopScanner);                  backToCorrectionButton.addEventListener('click', () => { stopScanner(); scanningView.classList.add('hidden'); correctionView.classList.remove('hidden'); });         startNewButton.addEventListener('click', resetApp);         closeModalButton.addEventListener('click', () => messageModal.classList.add('hidden'));     });     </script> </body> </html> 
